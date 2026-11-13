@@ -7,7 +7,7 @@
 #include <strings.h>
 
 const char* const hotkeyBtnNames[B_COUNT] = { "a", "b", "x", "y", "start", "select", "home", "l", "r", "l2", "r2", "l3",
-	                                          "up", "down", "left", "right" };
+	                                          "up", "down", "left", "right", "back" };
 /* as players know them (the device's names, as in the wiki's Buttons table;
  * Android keeps HOME for itself, and BACK stands in for it) */
 #ifdef __ANDROID__
@@ -16,7 +16,7 @@ const char* const hotkeyBtnNames[B_COUNT] = { "a", "b", "x", "y", "start", "sele
 #define HOME_TITLE "Home"
 #endif
 static const char* const btnTitles[B_COUNT] = { "A", "B", "X", "Y", "Start", "Select", HOME_TITLE, "L1", "R1", "L2", "R2", "L3",
-	                                            "Up", "Down", "Left", "Right" };
+	                                            "Up", "Down", "Left", "Right", "Back" };
 static const char* const actionTitles[HK_COUNT] = { "Quit", "Quick save state", "Quick load state", "Open quick menu", "Swap screens",
                                                     "Toggle selected shader" };
 

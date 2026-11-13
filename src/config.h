@@ -56,6 +56,9 @@ typedef struct Config {
 	char hotkeyBtn[HK_COUNT][8]; /* each hotkey action's button (hotkey_quit ...), or none */
 	int shaderLast;    /* the shader the shader hotkey turns back on (shader_last) */
 	char menuCombo[16]; /* select+start | none: buttons held together that open the pause menu */
+	char backButton[8];  /* back_button: none | menu (Back opens and closes the pause menu) */
+	char homeAction[8];  /* home_button_action: menu | quit (HOME saves the resume point and quits) */
+	char menu[16];      /* gba-ds | nibkit: the pause menu, GBA DS's own or nibOS's shared one (builds with GBADS_NIBKIT) */
 	int homeButton;    /* raw joystick button number that acts as HOME (-1 = off) */
 	bool showFps;
 	bool sway;         /* ask sway to fullscreen the window across all outputs */
@@ -87,6 +90,7 @@ typedef struct Config {
 	bool autoSave;        /* save a resume point on quitting the game (save_on_quit) */
 	bool autoLoad;        /* load it on launching the game (auto_load) */
 	bool barPinned;       /* the quick bar stays up (quick_bar_pinned) */
+	bool bar;             /* the quick bar at all: a swipe up, L3, its hotkey (quick_bar; off: the pause menu only) */
 	bool barHint;         /* "Swipe up for quick menu" at a game's start (quick_bar_hint) */
 	bool nameTags;        /* library keeps (USA), (En,Fr) etc. in game names */
 	bool showAll;         /* library lists games without a map profile too */
@@ -111,6 +115,8 @@ void config_defaults(Config* c);
 void config_load_file(Config* c, const char* path);
 /* Parses --key=value / --flag arguments and an optional ROM path. Returns false on error. */
 bool config_parse_args(Config* c, int argc, char** argv);
+/* One setting by its gba-ds.cfg name ("shader", "subpixels"): false if there's no such setting. */
+bool config_set(Config* c, const char* key, const char* val);
 void config_usage(const char* argv0);
 
 #endif

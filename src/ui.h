@@ -39,7 +39,9 @@ extern int nScreens;
 /* Logical buttons (after face-button mapping). */
 enum {
 	B_A, B_B, B_X, B_Y, B_START, B_SELECT, B_HOME, B_L, B_R, B_L2, B_R2, B_L3,
-	B_UP, B_DOWN, B_LEFT, B_RIGHT, B_COUNT
+	B_UP, B_DOWN, B_LEFT, B_RIGHT,
+	B_BACK, /* a Back key (nibOS on the RG DS Plus: KEY_BACK, a key of its own, not on the gamepad) */
+	B_COUNT
 };
 extern bool btnNow[B_COUNT], btnPrev[B_COUNT];
 static inline bool btn_pressed(int b) {

@@ -100,7 +100,7 @@ static void script_virtual_pad(void);
 
 static uint32_t parse_btns(const char* s) {
 	static const char* names[B_COUNT] = { "A", "B", "X", "Y", "START", "SELECT", "HOME", "L", "R", "L2", "R2", "L3",
-		                                  "UP", "DOWN", "LEFT", "RIGHT" };
+		                                  "UP", "DOWN", "LEFT", "RIGHT", "BACK" };
 	uint32_t m = 0;
 	char buf[128];
 	snprintf(buf, sizeof(buf), "%s", s);
@@ -663,7 +663,9 @@ static void layout_screens(void) {
 #ifdef __ANDROID__
 			screens[appOnTop ? i : 1 - i] = (Screen) { i, { 0, 0, w, h } };
 #else
-			screens[i] = (Screen) { i, { 0, 0, w, h } };
+			/* top_screen = second: the system lists the bottom panel first
+			 * (nibOS on the RG DS Plus: DSI-1, the touchscreen, is display 0) */
+			screens[!strcmp(cfg->topScreen, "second") ? 1 - i : i] = (Screen) { i, { 0, 0, w, h } };
 #endif
 		}
 		return;
@@ -998,6 +1000,17 @@ bool ui_render_reset(void) {
 	return r;
 }
 
+/* Back: AC_BACK, or Sleep, which is what sdl2-compat makes of SDL3's AC_BACK
+ * (nibOS: KEY_BACK, as DSlot binds it) */
+static bool backDown, backPulse;
+/* HOME pressed since the buttons were last read: a tap whose press and lift
+ * arrive together (nibOS's nibos-input sends a Menu tap so, on the lift)
+ * still counts for a frame */
+static bool homePulse;
+static bool back_key(SDL_Keysym k) {
+	return k.sym == SDLK_AC_BACK || k.sym == SDLK_SLEEP || k.scancode == SDL_SCANCODE_AC_BACK || k.scancode == SDL_SCANCODE_SLEEP;
+}
+
 bool ui_events(void) {
 	evdev_touch_poll();
 	evdev_volume_poll();
@@ -1044,6 +1057,7 @@ bool ui_events(void) {
 			break;
 		case SDL_JOYBUTTONDOWN:
 			raw_push('b', ev.jbutton.which, ev.jbutton.button, 1);
+			if (cfg->homeButton >= 0 && ev.jbutton.button == cfg->homeButton) homePulse = true;
 #ifdef __ANDROID__
 			/* buttons outside the standard set (15 L2, 16 R2, 17 C, 18 Z...) */
 			if (!debug && ev.jbutton.button >= 15) fprintf(stderr, "raw joystick button %d\n", ev.jbutton.button);
@@ -1056,6 +1070,7 @@ bool ui_events(void) {
 			volume_button(ev.jbutton.button);
 			break;
 		case SDL_CONTROLLERBUTTONDOWN:
+			if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) homePulse = true;
 			{
 				static int padLogged;
 				if (debug || padLogged++ < 8) fprintf(stderr, "controller button %s\n", SDL_GameControllerGetStringForButton(ev.cbutton.button));
@@ -1070,8 +1085,12 @@ bool ui_events(void) {
 			SDL_Scancode sc = ev.key.keysym.scancode;
 			if ((sc == SDL_SCANCODE_VOLUMEUP || sc == SDL_SCANCODE_VOLUMEDOWN) && evVolFd < 0) volume_key(sc == SDL_SCANCODE_VOLUMEUP);
 #endif
+			if (back_key(ev.key.keysym)) backDown = backPulse = true;
 			break;
 		}
+		case SDL_KEYUP:
+			if (back_key(ev.key.keysym)) backDown = false;
+			break;
 		case SDL_FINGERDOWN:
 		case SDL_FINGERUP:
 		case SDL_FINGERMOTION:
@@ -1165,7 +1184,8 @@ void ui_read_buttons(void) {
 	btnNow[B_Y] = phys[SDL_CONTROLLER_BUTTON_Y];
 	btnNow[B_START] = phys[SDL_CONTROLLER_BUTTON_START];
 	btnNow[B_SELECT] = phys[SDL_CONTROLLER_BUTTON_BACK];
-	btnNow[B_HOME] = phys[SDL_CONTROLLER_BUTTON_GUIDE] || rawHome;
+	btnNow[B_HOME] = phys[SDL_CONTROLLER_BUTTON_GUIDE] || rawHome || homePulse;
+	homePulse = false;
 	btnNow[B_L] = phys[SDL_CONTROLLER_BUTTON_LEFTSHOULDER];
 	btnNow[B_R] = phys[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER];
 	btnNow[B_L2] = l2;
@@ -1191,6 +1211,8 @@ void ui_read_buttons(void) {
 	if (k[SDL_SCANCODE_TAB]) btnNow[B_L2] = true;
 	if (k[SDL_SCANCODE_SPACE]) btnNow[B_R2] = true;
 	if (k[SDL_SCANCODE_Q]) btnNow[B_L3] = true;
+	btnNow[B_BACK] = backDown || backPulse;
+	backPulse = false;
 	if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_F1] || k[SDL_SCANCODE_HOME] || k[SDL_SCANCODE_AC_HOME] ||
 	    k[SDL_SCANCODE_MENU] || k[SDL_SCANCODE_APPLICATION]) {
 		btnNow[B_HOME] = true;

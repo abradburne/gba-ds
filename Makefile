@@ -7,6 +7,9 @@
 # MGBA_SRC   mGBA source tree (headers)
 # MGBA_BUILD a cmake build dir of mGBA (see scripts/build-rocknix.sh for the options), targets mgba and zlibstatic built
 # SDL_PREFIX an SDL2 install prefix (include/SDL2, lib/libSDL2.so)
+# NIBKIT     nibkit's nibkit-menu-c folder (https://github.com/abradburne/nibkit): builds in the pause
+#            menu nibOS's apps share (src/nibmenu.c, --menu=nibkit), linked from its static library
+#            (MIT; it embeds Roboto Condensed, SIL OFL 1.1: ship its OFL.txt). Needs cargo.
 
 CROSS      ?=
 CC         := $(CROSS)gcc
@@ -45,13 +48,24 @@ RC_DIR     := third_party/rcheevos
 RC_SRC     := $(wildcard $(RC_DIR)/src/*.c $(RC_DIR)/src/rapi/*.c $(RC_DIR)/src/rcheevos/*.c) $(RC_DIR)/src/rhash/md5.c
 RC_OBJ     := $(patsubst $(RC_DIR)/src/%.c,$(OUT)/rcheevos/%.o,$(RC_SRC))
 
-APP_SRC    := src/main.c src/config.c src/font.c src/ui.c src/library.c src/mapper.c src/hotkeys.c src/game.c src/paths.c src/image.c src/brand_data.c src/bezel.c src/bezel_logo.c src/logo.c src/cheats.c src/esinteg.c src/textfont.c src/fonts_data.c src/ra.c src/http.c src/sha256.c src/update.c $(CORE_SRC)
+NIBKIT     ?=
+ifneq ($(NIBKIT),)
+NIBKIT_A   := $(OUT)/nibkit/release/libnibkit_menu.a
+override CFLAGS += -DGBADS_NIBKIT -I$(NIBKIT)/include
+LIBS       := $(NIBKIT_A) $(LIBS) -ldl
+endif
+
+APP_SRC    := src/nibmenu.c src/main.c src/config.c src/font.c src/ui.c src/library.c src/mapper.c src/hotkeys.c src/game.c src/paths.c src/image.c src/brand_data.c src/bezel.c src/bezel_logo.c src/logo.c src/cheats.c src/esinteg.c src/textfont.c src/fonts_data.c src/ra.c src/http.c src/sha256.c src/update.c $(CORE_SRC)
 
 all: $(OUT)/gba-ds
 
-$(OUT)/gba-ds: $(APP_SRC) src/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ)
+$(OUT)/gba-ds: $(APP_SRC) src/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ) $(NIBKIT_A)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -DGBADS_RA -I$(RC_DIR)/include -I$(RC_DIR)/src -o $@ $(APP_SRC) $(RC_OBJ) $(LDFLAGS) $(LIBS)
+
+# nibkit's menu, built by cargo into the build folder
+$(NIBKIT_A): $(wildcard $(NIBKIT)/Cargo.toml $(NIBKIT)/src/*.rs)
+	cargo build --release --quiet --manifest-path $(NIBKIT)/Cargo.toml --target-dir $(OUT)/nibkit
 
 $(OUT)/rcheevos/%.o: $(RC_DIR)/src/%.c $(wildcard $(RC_DIR)/include/*.h)
 	@mkdir -p $(dir $@)

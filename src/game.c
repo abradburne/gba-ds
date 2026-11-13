@@ -20,6 +20,7 @@ extern void web_sleep(unsigned ms) __attribute__((import_module("env"), import_n
 #include "profiles.h"
 #include "patch.h"
 #include "cheats.h"
+#include "nibmenu.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -108,6 +109,7 @@ static struct {
 static bool aheadInFlight; /* the worker is emulating the next frame */
 static bool aheadReady;    /* it has: that frame is emulated but not yet used */
 static uint32_t aheadFb[GBA_W * GBA_H]; /* the frame on screen, while the worker writes the next */
+static const uint32_t* lastShown; /* the game's last frame drawn (one of the frame buffers): save states' pictures, the paused screen */
 
 /* Bits above the GBA keys, for run_frame: the SNES layout's camera pan
  * (profile controls.snes) left / right while a shoulder is held. */
@@ -2548,6 +2550,7 @@ static void bar_close(void) {
 }
 /* L3, or the quick menu hotkey: up, as with a swipe; again: down */
 static void bar_toggle(void) {
+	if (!cfg->bar) return; /* (quick_bar = 0) */
 	if (barOpen) {
 		bar_close();
 		return;
@@ -5012,6 +5015,8 @@ static void* screen_blob(size_t* n) {
 		free(m.p);
 	}
 	if (snapProf && mapShownIdx >= 0) blob_section(&b, "SNAP", snapShown, sizeof(snapShown));
+	/* the game's screen as it was, for a menu's picture of the state (bytes R, G, B, X) */
+	if (lastShown || emu.fb) blob_section(&b, "SHOT", lastShown ? lastShown : emu.fb, (size_t) GBA_W * GBA_H * 4);
 	if (mapTitleN > 0) {
 		Blob t = { 0 };
 		blob_u32(&t, (uint32_t) mapTitleN), blob_add(&t, mapTitle, (size_t) GBA_W * mapTitleN * 4);
@@ -6525,6 +6530,9 @@ static SDL_Rect ach_area(int scr) {
 	return (SDL_Rect) { px * 4, px * 25, r.w - px * 8, r.h - px * 27 };
 }
 
+static bool nibShown; /* (nibOS's pause menu: below, before game_run) */
+static bool nibBackFromAch;
+static bool nib_wanted(void);
 static void open_menu(void) {
 	bar_close();
 	barShown = 0;
@@ -6538,6 +6546,9 @@ static void open_menu(void) {
 	menuPressed = -1;
 	menuNote[0] = 0;
 	armedItem = -1;
+	nibShown = nib_wanted();
+	nibBackFromAch = false;
+	if (nibShown) nibmenu_set_slot(stateSlot), nibmenu_open();
 }
 
 /* Returns true if the session should end (*exitTo set). */
@@ -6931,11 +6942,225 @@ static void patches_setup(const char* rom) {
 	fprintf(stderr, "patches: %s, %d to apply%s\n", patchDir, n, on);
 }
 
+/* ---------------------------------------------------------------- nibOS's pause menu
+ *
+ * menu = nibkit (builds with GBADS_NIBKIT): the pause menu the other apps on
+ * nibOS share (nibmenu.c), in place of GBA DS's own, which stays a row away
+ * on its Game tab for what that menu doesn't have. The menu acts through
+ * the same items as GBA DS's own (activate). */
+/* nibShown: the menu up is nibOS's (GBA DS's own when false); nibBackFromAch:
+ * GBA DS's achievements list, opened from it: back to it after */
+static bool nibLoaded;       /* a state was loaded from it */
+static char nibTitle[512];   /* the ROM's file name without its extension */
+static SDL_Texture* nibTex[2][2]; /* [view][0 the touchscreen's picture, 1 the other's] */
+
+static bool nib_wanted(void) {
+	return nibmenu_available() && !strcmp(cfg->menu, "nibkit");
+}
+static const char* nib_slot_path(int s) {
+	if (s == NM_SLOT_RESUME) return gp.autoState;
+	if (s == NM_SLOT_QUICK) return gp.quick;
+	return s >= 0 && s < 10 ? gp.slot[s] : NULL;
+}
+static const char* nib_title(void) {
+	return nibTitle;
+}
+static bool nib_slot_used(int s) {
+	const char* p = nib_slot_path(s);
+	return p && file_exists(p);
+}
+static bool nib_slot_picture(int s, uint8_t* rgba) {
+	const char* p = nib_slot_path(s);
+	size_t n = 0;
+	uint8_t* b = p ? emu_state_file_get_extra(&emu, p, &n) : NULL;
+	uint32_t sz = 0;
+	const uint8_t* shot = b ? blob_find(b, n, "SHOT", &sz) : NULL;
+	bool ok = shot && sz == (uint32_t) GBA_W * GBA_H * 4;
+	if (ok) {
+		for (int i = 0; i < GBA_W * GBA_H; ++i) memcpy(rgba + i * 4, shot + i * 4, 3), rgba[i * 4 + 3] = 255;
+	}
+	free(b);
+	return ok;
+}
+static void nib_slot_saved(int s, char* out, size_t n) {
+	struct stat st;
+	const char* p = nib_slot_path(s);
+	out[0] = 0;
+	if (!p || stat(p, &st) != 0) return;
+	struct tm t, now;
+	time_t tn = time(NULL), yest = tn - 86400;
+	localtime_r(&st.st_mtime, &t);
+	localtime_r(&tn, &now);
+	char clock[16];
+	snprintf(clock, sizeof(clock), "%d:%02d %s", (t.tm_hour + 11) % 12 + 1, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+	struct tm y;
+	localtime_r(&yest, &y);
+	static const char* const mon[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+	if (t.tm_year == now.tm_year && t.tm_yday == now.tm_yday) snprintf(out, n, "Today %s", clock);
+	else if (t.tm_year == y.tm_year && t.tm_yday == y.tm_yday) snprintf(out, n, "Yesterday %s", clock);
+	else if (t.tm_year == now.tm_year) snprintf(out, n, "%s %d, %s", mon[t.tm_mon], t.tm_mday, clock);
+	else snprintf(out, n, "%s %d, %d", mon[t.tm_mon], t.tm_mday, t.tm_year + 1900);
+}
+static int nib_cheat_count(void) {
+	return cheats.n;
+}
+static const char* nib_cheat_name(int i) {
+	return cheats.items[i].desc;
+}
+static bool nib_cheat_on(int i) {
+	return cheats.items[i].on;
+}
+static void nib_cheat_toggle(int i) {
+	if (i < 0 || i >= cheats.n) return;
+	cheats.items[i].on = !cheats.items[i].on;
+	cheats_apply(&cheats, &emu);
+	cheats_save(&cheats);
+}
+static bool nib_achievements(void) {
+	return ra_enabled();
+}
+static bool nib_fast_forward(void) {
+	return cfg->fastForward;
+}
+static int nib_volume(void) {
+	return ui_volume();
+}
+/* A setting GBA DS declares to DSlot (gba-ds.toml), changed in the menu:
+ * applied now, as GBA DS's own menu applies it. */
+static void nib_apply(const char* key, const char* value) {
+	bool on = !strcmp(value, "1") || !strcasecmp(value, "true") || !strcasecmp(value, "on");
+	if (!strcmp(key, "swap")) {
+		if (on != cfg->swap) swap_screens();
+	} else if (!strcmp(key, "shader")) {
+		for (int i = 0; i < SH_COUNT; ++i)
+			if (!strcasecmp(value, shaderNames[i]) && i != cfg->shader) set_shader(i);
+	} else if (!strcmp(key, "scale")) {
+		config_set(cfg, "scale", value);
+		config_set(cfg, "map_scale", value);
+	} else if (!strcmp(key, "color_correction")) {
+		if (on != cfg->colorCorrection) {
+			cfg->colorCorrection = on;
+			ui_color_correction(on);
+			rebuild_textures();
+		}
+	} else if (!strcmp(key, "lcd_ghosting")) {
+		cfg->ghosting = on;
+		ghostHave = false;
+	} else if (!strcmp(key, "rewind")) {
+		if (on != cfg->rewind) cfg->rewind = on, rewind_setup();
+	} else if (!strcmp(key, "lcd_strength")) {
+		config_set(cfg, key, value);
+	} else if (!config_set(cfg, key, value)) {
+		fprintf(stderr, "menu: no setting %s\n", key);
+	}
+}
+static const NibMenuHost nibHost = {
+	nib_title, nib_slot_used, nib_slot_picture, nib_slot_saved, nib_cheat_count, nib_cheat_name, nib_cheat_on,
+	nib_cheat_toggle, nib_achievements, nib_fast_forward, nib_volume, NULL, nib_apply,
+};
+
+/* Draws the menu: its picture on the touchscreen, the paused game or the
+ * highlighted state on the other screen, each filling its screen keeping
+ * the 4:3 shape. */
+static void nib_draw_picture(int scr, int which, const uint8_t* rgba, int w, int h) {
+	if (!rgba || scr < 0 || scr >= nScreens) return;
+	int v = screens[scr].view;
+	SDL_Renderer* ren = views[v].ren;
+	SDL_Texture** t = &nibTex[v][which];
+	int tw = 0, th = 0;
+	if (*t) SDL_QueryTexture(*t, NULL, NULL, &tw, &th);
+	if (!*t || tw != w || th != h) {
+		if (*t) SDL_DestroyTexture(*t);
+		*t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+		if (!*t) return;
+		SDL_SetTextureScaleMode(*t, SDL_ScaleModeLinear);
+	}
+	SDL_UpdateTexture(*t, NULL, rgba, w * 4);
+	SDL_Rect r = screens[scr].rect, dst = r;
+	if ((long) r.w * h > (long) r.h * w) dst.w = (int) ((long) r.h * w / h), dst.x = r.x + (r.w - dst.w) / 2;
+	else dst.h = (int) ((long) r.w * h / w), dst.y = r.y + (r.h - dst.h) / 2;
+	SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+	SDL_RenderFillRect(ren, &r);
+	SDL_RenderCopy(ren, *t, NULL, &dst);
+}
+static void nib_draw(void) {
+	int ts = ui_touch_screen(), other = ui_other_screen();
+	int w, h;
+	const uint8_t* bottom = nibmenu_render(&w, &h);
+	nib_draw_picture(ts, 0, bottom, w, h);
+	if (other != ts) {
+		const uint8_t* top = nibmenu_render_top(lastShown ? lastShown : emu.fb, &w, &h);
+		nib_draw_picture(other, 1, top, w, h);
+	}
+}
+/* What the menu asked for, done as GBA DS's own menu does it: true when the
+ * session ends (*exitTo set). */
+static bool nib_act(NibMenuResult r, enum GameExit* exitTo) {
+	char m[80];
+	switch (r.action) {
+	case NM_RESUME: menuOpen = false; break;
+	case NM_SAVE:
+		stateSlot = r.slot;
+		snprintf(m, sizeof(m), state_save(gp.slot[r.slot]) ? "Saved to slot %d" : "Slot %d: save failed", r.slot + 1);
+		nibmenu_message(m);
+		break;
+	case NM_LOAD: {
+		const char* path = nib_slot_path(r.slot);
+		if (r.slot >= 0) stateSlot = r.slot;
+		if (path && state_load(path)) {
+			menuOpen = false;
+			nibLoaded = true; /* (game_run: the second screen from the state) */
+			if (!stateWarned) ui_osd("State loaded.");
+		} else {
+			nibmenu_message("Load failed");
+		}
+		break;
+	}
+	case NM_RESET:
+		armedItem = M_RESTART; /* (the menu asked twice already) */
+		return activate(M_RESTART, exitTo);
+	case NM_QUIT: *exitTo = GAME_QUIT_APP; return true;
+	case NM_SHOT:
+		armedItem = M_SHOT;
+		return activate(M_SHOT, exitTo);
+	case NM_FF:
+		cfg->fastForward = !cfg->fastForward;
+		save_prefs();
+		break;
+	case NM_OWN_MENU:
+		nibmenu_close();
+		nibShown = false;
+		set_page(0);
+		menuSel = 0;
+		break;
+	case NM_ACH:
+		ra_list_open();
+		achOpen = true;
+		achPressed = false;
+		nibShown = false, nibBackFromAch = true;
+		break;
+	}
+	return false;
+}
+static void nib_textures_free(void) {
+	for (int v = 0; v < 2; ++v)
+		for (int k = 0; k < 2; ++k)
+			if (nibTex[v][k]) SDL_DestroyTexture(nibTex[v][k]), nibTex[v][k] = NULL;
+}
+
 enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 	cfg = c;
 	debug = getenv("GBADS_DEBUG") != NULL;
 	romPath = rom, lastLoop = 0;
 	game_paths(cfg, rom, &gp);
+	{
+		/* nibOS's menu: DSlot names a game by its ROM's file name, without the extension */
+		const char* b = strrchr(rom, '/');
+		snprintf(nibTitle, sizeof(nibTitle), "%s", b ? b + 1 : rom);
+		char* dot = strrchr(nibTitle, '.');
+		if (dot && dot != nibTitle) *dot = 0;
+		nibmenu_set_host(&nibHost);
+	}
 	patches_setup(rom); /* GEN-9: the patches folder, what's on, and the plan every core opens the ROM with */
 	profile_set_rom(NULL, 0);
 	if (!emu_open(&emu, rom, gp.sav, true)) {
@@ -7037,6 +7262,7 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 	} else {
 		ui_osd("Tap the screen or press HOME for the menu");
 	}
+	if (!cfg->bar) cfg->barPinned = cfg->barHint = false; /* (quick_bar = 0: none of it) */
 	if (cfg->barPinned) barOpen = true, barSince = SDL_GetTicks(); /* (pinned: up from the start) */
 	rewind_setup();
 
@@ -7178,6 +7404,16 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		Pointer p;
 		while (ui_next_pointer(&p)) {
 			if (p.kind == 1) hint_dismiss(); /* (any touch puts the hint away) */
+			if (menuOpen && nibShown) {
+				/* nibOS's menu: a finger down on the touchscreen, in its 1024 x 768 units */
+				int ts = ui_touch_screen();
+				if (p.kind == 1 && p.screen == ts && screens[ts].rect.w > 0 && screens[ts].rect.h > 0) {
+					if (nib_act(nibmenu_touch(p.x * 1024.0f / screens[ts].rect.w, p.y * 768.0f / screens[ts].rect.h), &exitTo)) done = true;
+					stateSlot = nibmenu_slot();
+				if (nibLoaded) forceMap = true, nibLoaded = false;
+				}
+				continue;
+			}
 			if (!menuOpen) {
 				/* the quick bar: up from the bottom edge of the touchscreen
 				 * brings it up, down puts it away; a tap still opens the
@@ -7197,7 +7433,7 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 						barGX = p.x, barGY = p.y;
 						continue;
 					}
-					if (p.screen == ts && p.y >= screens[ts].rect.h - u * 36) {
+					if (cfg->bar && p.screen == ts && p.y >= screens[ts].rect.h - u * 36) {
 						barGesture = G_TRACK;
 						barGX = p.x, barGY = p.y;
 						continue;
@@ -7533,6 +7769,19 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 			}
 		}
 		if (btn_released(B_HOME) && !(modBtn == B_HOME && comboUsed)) {
+			if (!strcmp(cfg->homeAction, "quit")) {
+				/* home_button_action = quit (nibOS: Menu leaves the game, as in its other
+				 * emulators): the resume point saved (save_on_quit) on the way out */
+				exitTo = GAME_QUIT_APP;
+				done = true;
+			} else if (menuOpen) {
+				menuOpen = false;
+			} else {
+				open_menu();
+			}
+		}
+		/* back_button = menu: Back pauses with the menu, and closes it again */
+		if (!strcmp(cfg->backButton, "menu") && btn_pressed(B_BACK) && !done) {
 			if (menuOpen) menuOpen = false;
 			else open_menu();
 		}
@@ -7544,7 +7793,23 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		}
 		if (done) break;
 
-		if (menuOpen && achOpen) {
+		if (menuOpen && nibBackFromAch && !achOpen) nibShown = true, nibBackFromAch = false; /* (back from GBA DS's achievements list) */
+		if (menuOpen && nibShown) {
+			if (!comboOpened) {
+				/* the buttons by what is printed on them, as nibkit's menu takes them */
+				static const int nibKeys[10] = { B_UP, B_DOWN, B_LEFT, B_RIGHT, B_A, B_B, B_X, B_Y, B_L, B_R };
+				bool pr[10], hd[10];
+				for (int k = 0; k < 10; ++k) pr[k] = btn_pressed(nibKeys[k]), hd[k] = btnNow[nibKeys[k]];
+				if (btn_pressed(B_START)) menuOpen = false;
+				else if (nib_act(nibmenu_keys(pr, hd, 16), &exitTo)) break;
+				stateSlot = nibmenu_slot();
+				if (nibLoaded) forceMap = true, nibLoaded = false;
+			}
+			if (menuOpen && !wasMenu && audio) {
+				SDL_PauseAudioDevice(audio, 1);
+				SDL_ClearQueuedAudio(audio);
+			}
+		} else if (menuOpen && achOpen) {
 			int scr = ui_touch_screen();
 			static int held[2];
 			for (int k = 0; k < 2; ++k) {
@@ -7678,6 +7943,8 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 			}
 		}
 		if (wasMenu && !menuOpen) {
+			nibmenu_close();
+			nibShown = nibBackFromAch = false;
 			if (noteOpen) note_done(true); /* (closed some other way: saved with what's typed) */
 			suppress_held();
 			if (cfg->barPinned) barOpen = true, barSince = SDL_GetTicks(); /* (pinned: back after the menu) */
@@ -7692,8 +7959,12 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		if (menuOpen) {
 			ra_idle();
 			ui_clear();
-			draw_game();
-			draw_menu();
+			if (nibShown) {
+				nib_draw();
+			} else {
+				draw_game();
+				draw_menu();
+			}
 			ui_present();
 			SDL_Delay(16);
 			next = SDL_GetPerformanceCounter() / freq;
@@ -8071,6 +8342,7 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		if (mirrorOn && mirrorHave) shownFb = mirrorHeld; /* (hud.mirror: the picture from before) */
 		if (tallLive) shownFb = cfg->swap ? tallBot : tallTop; /* (profile.tall: the table's upper half on the top screen) */
 		if (cfg->ghosting) shownFb = ghost_frame(shownFb);
+		lastShown = shownFb;
 		/* only the view the game is on needs it (all of them right after a swap,
 		 * since the menu draws the game without uploading) */
 		for (int i = 0; i < nViews; ++i) {
@@ -8186,6 +8458,7 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		noteOpen = false;
 	}
 	auto_save();
+	nib_textures_free();
 	ra_game_end();
 	if (audio) SDL_CloseAudioDevice(audio);
 	if (audioConv) SDL_FreeAudioStream(audioConv);

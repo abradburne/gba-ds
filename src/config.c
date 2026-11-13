@@ -19,6 +19,9 @@ void config_defaults(Config* c) {
 	for (int i = 0; i < HK_COUNT; ++i) strcpy(c->hotkeyBtn[i], hotkeyDefaults[i]);
 	c->shaderLast = SH_GRID;
 	strcpy(c->menuCombo, "none");
+	strcpy(c->menu, "gba-ds");
+	strcpy(c->backButton, "none");
+	strcpy(c->homeAction, "menu");
 	strcpy(c->romDir, "/storage/roms/gba");
 	strcpy(c->screenshotDir, "/storage/roms/screenshots");
 	strcpy(c->cheatDir, "/config/retroarch/cheats:/storage/.config/retroarch/cheats");
@@ -50,6 +53,7 @@ void config_defaults(Config* c) {
 	c->autoSave = true;
 	c->autoLoad = true;
 	c->barHint = true;
+	c->bar = true;
 	c->updateCheck = true;
 	c->showAll = false;
 	c->nameTags = false;
@@ -162,6 +166,9 @@ static bool set_option(Config* c, const char* key, const char* val) {
 		return true;
 	}
 	STR("menu_combo", menuCombo)
+	STR("menu", menu)
+	STR("back_button", backButton)
+	STR("home_button_action", homeAction)
 	INT("home_button", homeButton)
 	BOOL("show_fps", showFps)
 	BOOL("sway", sway)
@@ -194,6 +201,7 @@ static bool set_option(Config* c, const char* key, const char* val) {
 	BOOL("save_on_quit", autoSave)
 	BOOL("auto_load", autoLoad)
 	BOOL("quick_bar_pinned", barPinned)
+	BOOL("quick_bar", bar)
 	BOOL("quick_bar_hint", barHint)
 	BOOL("show_all", showAll)
 	BOOL("name_tags", nameTags)
@@ -213,6 +221,10 @@ static bool set_option(Config* c, const char* key, const char* val) {
 #undef STR
 #undef BOOL
 #undef INT
+}
+
+bool config_set(Config* c, const char* key, const char* val) {
+	return set_option(c, key, val);
 }
 
 void config_load_file(Config* c, const char* path) {
@@ -309,6 +321,10 @@ void config_usage(const char* argv0) {
 	        "                         each shortcut's button (a, b, x, y, l, r, l2, r2, select,\n"
 	        "                         start, l3, up, down, left, right) or none\n"
 	        "  --menu-combo=select+start|none   buttons that open the menu together (none)\n"
+	        "  --quick-bar=0          no quick bar (swipe up, L3, its hotkey): the pause menu only\n"
+	        "  --back-button=none|menu   a Back key opens and closes the pause menu\n"
+	        "  --home-button-action=menu|quit   HOME alone: the pause menu, or save the resume point (as set) and quit\n"
+	        "  --menu=gba-ds|nibkit   the pause menu: GBA DS's own, or nibOS's shared one (builds with it)\n"
 	        "  --home-button=N        raw joystick button that acts as HOME (see GBADS_DEBUG=1 log)\n"
 	        "  --no-auto-resume       don't save on exit / resume on launch\n"
 	        "  --no-save-on-quit      don't save a resume point on quitting (--no-auto-load: don't load it)\n"
